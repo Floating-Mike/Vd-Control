@@ -1,0 +1,2 @@
+# Build outputs — reproduce locally via build-msvc.bat / build-mingw.sh
+build/
