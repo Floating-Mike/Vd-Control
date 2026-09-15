@@ -27,6 +27,10 @@ Check(r, what) {
 
 ; Wrappers with error checking built in — the main file just calls these.
 VdGoTo(n)           => Check(DllCall("Vd\VdGoTo", "Int", n, "Int"), "GoTo " n)
+VdGoBack()          => Check(DllCall("Vd\VdGoBack", "Int"), "GoBack")
+VdGoLeft()          => Check(DllCall("Vd\VdGoLeft", "Int"), "GoLeft")
+VdGoRight()         => Check(DllCall("Vd\VdGoRight", "Int"), "GoRight")
+VdRemoveCurrent()   => Check(DllCall("Vd\VdRemoveCurrentDesktop", "Int"), "Remove desktop")
 VdMoveFocused(n)    => Check(DllCall("Vd\VdMoveFocused", "Int", n, "Int"), "Move to " n)
 VdCount()           => Check(DllCall("Vd\VdGetCount", "Int"), "GetCount")
 VdCurrent()         => Check(DllCall("Vd\VdGetCurrent", "Int"), "GetCurrent")
@@ -66,3 +70,16 @@ VdHwndDesk(hwnd)    => Check(DllCall("Vd\VdGetHwndDesktop", "Ptr", hwnd, "Int"),
 
 ; --- 5) out-of-range demo: with 4 desktops, this creates desktop 5 ---
 #F3::MsgBox("Asked 7, got " VdGoTo(7), "Vd ensure-one")
+
+; --- 6) neighbours and back ---
+; Overrides Windows defaults: Win+Ctrl+Left/Right switch desktops natively,
+; so these are just alternates. Win+Backspace is unassigned by default.
+#^Left::VdGoLeft()
+#^Right::VdGoRight()
+#Backspace::VdGoBack()  ; toggle to last-active desktop
+
+; --- 7) remove current desktop ---
+; No Windows default on this combo. Windows moves every window on the removed
+; desktop to the fallback (last-active) desktop — nothing is closed. With a
+; single desktop this is a silent no-op returning 1.
+#F4::MsgBox("Removed; now on desktop " VdRemoveCurrent(), "Vd")

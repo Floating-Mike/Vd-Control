@@ -8,6 +8,12 @@
 //   int VdGetCount()                 -> count, or -1 on error
 //   int VdGetCurrent()               -> 1-based current desktop, or -1
 //   int VdGoTo(int n)                -> actual 1-based desktop switched to, or -1
+//   int VdGoBack()                   -> 1-based last-active desktop switched to, or -1
+//   int VdGoLeft() / VdGoRight()     -> 1-based neighbour switched to, or -1
+//   int VdRemoveCurrentDesktop()     -> 1-based desktop landed on after removal, or -1
+//                                      (single desktop: silent no-op, returns 1;
+//                                       windows on the removed desktop move to
+//                                       the fallback = last-active desktop)
 //   int VdMoveFocused(int n)         -> actual 1-based target, window stays or -1
 //   int VdMoveHwnd(HWND hwnd, int n) -> actual 1-based target, or -1
 //   int VdGetHwndDesktop(HWND hwnd)  -> 1-based desktop of window, or -1
@@ -256,6 +262,48 @@ static bool VdMoveHwndInner(VdSession& s, HWND hwnd, int nOneBased,
     return true;
 }
 
+// Switch to the desktop adjacent to the current one.
+// direction: 3 = left, 4 = right (matches GetAdjacentDesktop convention).
+static int VdGoAdjacent(int direction) {
+    VdClearError();
+    VdSession s;
+    if (!s.InitCom()) return -1;
+    if (!s.Acquire()) return -1;
+    VD_IVirtualDesktop* cur = nullptr;
+    HRESULT hr = s.mgr->GetCurrentDesktop(&cur);
+    if (FAILED(hr) || !cur) {
+        VdSetError((int)hr, "GetCurrentDesktop failed", hr);
+        return -1;
+    }
+    VD_IVirtualDesktop* adj = nullptr;
+    hr = s.mgr->GetAdjacentDesktop(cur, direction, &adj);
+    cur->Release();
+    if (FAILED(hr) || !adj) {
+        VdSetErrorMsg(E_FAIL, direction == 3 ? "no desktop to the left"
+                                             : "no desktop to the right");
+        return -1;
+    }
+    GUID id = {0};
+    hr = adj->GetID(&id);
+    if (FAILED(hr)) {
+        adj->Release();
+        VdSetError((int)hr, "GetID failed", hr);
+        return -1;
+    }
+    int idx = VdIndexOfGuid(s.mgr, id);
+    if (idx < 0) {
+        adj->Release();
+        return -1;
+    }
+    hr = s.mgr->SwitchDesktop(adj);
+    adj->Release();
+    if (FAILED(hr)) {
+        VdSetError((int)hr, "SwitchDesktop failed", hr);
+        return -1;
+    }
+    return idx;
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -370,6 +418,121 @@ __declspec(dllexport) int WINAPI VdGetHwndDesktop(HWND hwnd) {
         return VdIndexOfGuid(s.mgr, cid);
     }
     return VdIndexOfGuid(s.mgr, id);
+}
+
+__declspec(dllexport) int WINAPI VdGoBack() {
+    VdClearError();
+    VdSession s;
+    if (!s.InitCom()) return -1;
+    if (!s.Acquire()) return -1;
+    VD_IVirtualDesktop* last = nullptr;
+    HRESULT hr = s.mgr->GetLastActiveDesktop(&last);
+    if (FAILED(hr) || !last) {
+        VdSetError((int)hr, "GetLastActiveDesktop failed", hr);
+        return -1;
+    }
+    GUID id = {0};
+    hr = last->GetID(&id);
+    last->Release();
+    if (FAILED(hr)) {
+        VdSetError((int)hr, "GetID failed", hr);
+        return -1;
+    }
+    int idx = VdIndexOfGuid(s.mgr, id);
+    if (idx < 0) return -1;
+    VD_IVirtualDesktop* target = nullptr;
+    if (!VdGetDesktopAt(s.mgr, (UINT)(idx - 1), &target)) return -1;
+    hr = s.mgr->SwitchDesktop(target);
+    target->Release();
+    if (FAILED(hr)) {
+        VdSetError((int)hr, "SwitchDesktop failed", hr);
+        return -1;
+    }
+    return idx;
+}
+
+__declspec(dllexport) int WINAPI VdGoLeft() {
+    return VdGoAdjacent(3);
+}
+
+__declspec(dllexport) int WINAPI VdGoRight() {
+    return VdGoAdjacent(4);
+}
+
+__declspec(dllexport) int WINAPI VdRemoveCurrentDesktop() {
+    VdClearError();
+    VdSession s;
+    if (!s.InitCom()) return -1;
+    if (!s.Acquire()) return -1;
+    UINT count = 0;
+    if (!VdGetCountRaw(s.mgr, &count)) return -1;
+    VD_IVirtualDesktop* cur = nullptr;
+    HRESULT hr = s.mgr->GetCurrentDesktop(&cur);
+    if (FAILED(hr) || !cur) {
+        VdSetError((int)hr, "GetCurrentDesktop failed", hr);
+        return -1;
+    }
+    GUID curId = {0};
+    hr = cur->GetID(&curId);
+    if (FAILED(hr)) {
+        cur->Release();
+        VdSetError((int)hr, "GetID failed", hr);
+        return -1;
+    }
+    int curIdx = VdIndexOfGuid(s.mgr, curId);
+    if (curIdx < 0) {
+        cur->Release();
+        return -1;
+    }
+    if (count <= 1) {
+        // Nothing to remove (Windows would refuse) — silent no-op.
+        cur->Release();
+        VdClearError();
+        return curIdx; // == 1
+    }
+    // Fallback for the removed desktop's windows: last-active desktop,
+    // unless that IS the one being removed (then desktop 1, or 2 if
+    // current is 1).
+    VD_IVirtualDesktop* fallback = nullptr;
+    VD_IVirtualDesktop* last = nullptr;
+    hr = s.mgr->GetLastActiveDesktop(&last);
+    if (SUCCEEDED(hr) && last) {
+        GUID lastId = {0};
+        if (SUCCEEDED(last->GetID(&lastId)) && !IsEqualGUID(lastId, curId)) {
+            fallback = last;
+        }
+        else {
+            last->Release();
+        }
+    }
+    if (!fallback) {
+        if (!VdGetDesktopAt(s.mgr, (curIdx == 1) ? 1u : 0u, &fallback)) {
+            cur->Release();
+            return -1;
+        }
+    }
+    hr = s.mgr->RemoveDesktop(cur, fallback);
+    cur->Release();
+    fallback->Release();
+    if (FAILED(hr)) {
+        VdSetError((int)hr, "RemoveDesktop failed", hr);
+        return -1;
+    }
+    // Indices shift after removal — report where we actually landed.
+    VD_IVirtualDesktop* now = nullptr;
+    hr = s.mgr->GetCurrentDesktop(&now);
+    if (FAILED(hr) || !now) {
+        VdSetError((int)hr, "GetCurrentDesktop failed", hr);
+        return -1;
+    }
+    GUID nowId = {0};
+    hr = now->GetID(&nowId);
+    now->Release();
+    if (FAILED(hr)) {
+        VdSetError((int)hr, "GetID failed", hr);
+        return -1;
+    }
+    return VdIndexOfGuid(s.mgr, nowId);
 }
 
 __declspec(dllexport) int WINAPI VdLastErrorCode() {

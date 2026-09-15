@@ -16,6 +16,9 @@ AutoHotkey v2. Targets **Windows 11 24H2 (26100+) / 25H2 (26200+)** only.
 | `VdGetCount()` | number of desktops | count, `-1` on error |
 | `VdGetCurrent()` | current desktop (1-based) | number, `-1` on error |
 | `VdGoTo(n)` | switch to desktop `n` (creates one if `n > Count`) | actual desktop used, `-1` |
+| `VdGoBack()` | switch to last-active desktop (toggle) | desktop switched to, `-1` |
+| `VdGoLeft()` / `VdGoRight()` | switch to neighbouring desktop (`-1` at the edge) | desktop switched to, `-1` |
+| `VdRemoveCurrentDesktop()` | remove current desktop (see note below) | desktop landed on, `-1` |
 | `VdMoveFocused(n)` | move focused window to `n` (creates one if beyond; stays put) | actual target, `-1` |
 | `VdMoveHwnd(hwnd, n)` | move explicit window handle to `n` | actual target, `-1` |
 | `VdGetHwndDesktop(hwnd)` | desktop containing `hwnd` (pinned windows report current) | number, `-1` |
@@ -25,6 +28,11 @@ All functions return `-1` on failure; call `VdLastErrorText()` for the reason
 (stale Explorer, invalid window, pinned/toolwindow, COM mismatch after a
 Windows update, …). `Move` never follows — chain `VdMoveFocused(n)` +
 `VdGoTo(n)` if you want move-and-follow (see `example.ahk`).
+
+Removing a desktop never closes anything: Windows moves every window on it
+to the fallback desktop, which here is the last-active desktop (or desktop 1
+if that *is* the one being removed). With a single desktop the call is a
+silent no-op returning `1` — matching what Windows itself would do.
 
 ## Use in AHK v2 (brief)
 
@@ -49,7 +57,8 @@ VdMoveFocused(n) => Check(DllCall("Vd\VdMoveFocused", "Int", n, "Int"), "Move to
 
 No `GetProcAddress` dance is needed — `DllCall("Vd\Func", …)` resolves
 directly. See **`example.ahk`** for the full demonstration (jump, move, move
-+ follow, count/current inspection, out-of-range creation, error tooltips).
++ follow, neighbours/back, remove, count/current inspection, out-of-range
+creation, error tooltips).
 
 ## Compile & link
 
