@@ -36,7 +36,12 @@ VdCount()           => Check(DllCall("Vd\VdGetCount", "Int"), "GetCount")
 VdCurrent()         => Check(DllCall("Vd\VdGetCurrent", "Int"), "GetCurrent")
 VdMoveHwnd(hwnd, n) => Check(DllCall("Vd\VdMoveHwnd", "Ptr", hwnd, "Int", n, "Int"), "Move window")
 VdHwndDesk(hwnd)    => Check(DllCall("Vd\VdGetHwndDesktop", "Ptr", hwnd, "Int"), "Window desktop")
+VdSetAnimation(on)  => DllCall("Vd\VdSetAnimation", "Int", on ? 1 : 0, "Int")
 ; ================= end of library part =================
+
+; Animated switches, remembered by the DLL for the rest of the session.
+; Call once here after LoadLibrary; omit for the default instant switches.
+; VdSetAnimation(true)
 
 ; --- 1) jump to desktop N ---
 ; Overrides Windows default: Win+1..9 launch / switch to taskbar-pinned apps.

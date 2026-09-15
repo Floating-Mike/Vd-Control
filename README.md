@@ -22,6 +22,7 @@ AutoHotkey v2. Targets **Windows 11 24H2 (26100+) / 25H2 (26200+)** only.
 | `VdMoveFocused(n)` | move focused window to `n` (creates one if beyond; stays put) | actual target, `-1` |
 | `VdMoveHwnd(hwnd, n)` | move explicit window handle to `n` | actual target, `-1` |
 | `VdGetHwndDesktop(hwnd)` | desktop containing `hwnd` (pinned windows report current) | number, `-1` |
+| `VdSetAnimation(on)` | `1`/`0`: animate all later switches; returns previous flag | previous `0`/`1` |
 | `VdLastErrorCode()` / `VdLastErrorText()` | last failure diagnostics | code / UTF-8 string |
 
 All functions return `-1` on failure; call `VdLastErrorText()` for the reason
@@ -33,6 +34,13 @@ Removing a desktop never closes anything: Windows moves every window on it
 to the fallback desktop, which here is the last-active desktop (or desktop 1
 if that *is* the one being removed). With a single desktop the call is a
 silent no-op returning `1` — matching what Windows itself would do.
+
+The DLL also holds session state: `VdSetAnimation(1)` once after
+`LoadLibrary` makes every later `VdGoTo`/`VdGoBack`/`VdGoLeft`/`VdGoRight`
+use the animated switch (waiting for it to finish, so rapid key repeats stay
+ordered). It returns the previous flag. Default is off (instant switches).
+The flag lives as long as the DLL stays loaded — for an always-running
+script, that means the whole login session; a script reload resets it.
 
 ## Use in AHK v2 (brief)
 

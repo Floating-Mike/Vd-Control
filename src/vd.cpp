@@ -17,6 +17,9 @@
 //   int VdMoveFocused(int n)         -> actual 1-based target, window stays or -1
 //   int VdMoveHwnd(HWND hwnd, int n) -> actual 1-based target, or -1
 //   int VdGetHwndDesktop(HWND hwnd)  -> 1-based desktop of window, or -1
+//   int VdSetAnimation(BOOL on)      -> previous flag (0/1). Process-global,
+//                                      remembered for DLL lifetime (default
+//                                      off). Call once after LoadLibrary.
 //   int VdLastErrorCode()            -> last HRESULT / Win32 code (0 if none)
 //   const char* VdLastErrorText()    -> last error text (UTF-8, thread-local)
 //
@@ -27,6 +30,7 @@
 #include <objbase.h>
 #include <stdio.h>
 #include <string.h>
+#include <atomic>
 
 #include "vd_com.h"
 
@@ -262,6 +266,24 @@ static bool VdMoveHwndInner(VdSession& s, HWND hwnd, int nOneBased,
     return true;
 }
 
+// Animation preference: process-global (NOT thread-local) so one
+// VdSetAnimation call after LoadLibrary covers the whole session.
+static std::atomic<bool> g_animate{false};
+
+// Single switch path for VdGoTo/VdGoBack/VdGoLeft/VdGoRight.
+static HRESULT VdSwitchTo(VD_IManagerInternal* mgr, VD_IVirtualDesktop* desktop) {
+    if (g_animate.load()) {
+        // Settle, animate, settle — mirrors the MScholtes MakeVisible order.
+        // Waits are best-effort; only the switch itself can fail the call.
+        mgr->WaitForAnimationToComplete();
+        HRESULT hr = mgr->SwitchDesktopWithAnimation(desktop);
+        if (FAILED(hr)) return hr;
+        mgr->WaitForAnimationToComplete();
+        return S_OK;
+    }
+    return mgr->SwitchDesktop(desktop);
+}
+
 // Switch to the desktop adjacent to the current one.
 // direction: 3 = left, 4 = right (matches GetAdjacentDesktop convention).
 static int VdGoAdjacent(int direction) {
@@ -295,7 +317,7 @@ static int VdGoAdjacent(int direction) {
         adj->Release();
         return -1;
     }
-    hr = s.mgr->SwitchDesktop(adj);
+    hr = VdSwitchTo(s.mgr, adj);
     adj->Release();
     if (FAILED(hr)) {
         VdSetError((int)hr, "SwitchDesktop failed", hr);
@@ -349,7 +371,7 @@ __declspec(dllexport) int WINAPI VdGoTo(int n) {
     VD_IVirtualDesktop* target = nullptr;
     int actual = 0;
     if (!VdEnsure(s.mgr, n, &target, &actual)) return -1;
-    HRESULT hr = s.mgr->SwitchDesktop(target);
+    HRESULT hr = VdSwitchTo(s.mgr, target);
     target->Release();
     if (FAILED(hr)) {
         VdSetError((int)hr, "SwitchDesktop failed", hr);
@@ -533,6 +555,12 @@ __declspec(dllexport) int WINAPI VdRemoveCurrentDesktop() {
         return -1;
     }
     return VdIndexOfGuid(s.mgr, nowId);
+}
+
+__declspec(dllexport) int WINAPI VdSetAnimation(BOOL on) {
+    VdClearError();
+    bool prev = g_animate.exchange(on != FALSE);
+    return prev ? 1 : 0;
 }
 
 __declspec(dllexport) int WINAPI VdLastErrorCode() {
