@@ -13,7 +13,6 @@
 ; one-liners whatever the hotkey.
 
 ; ================= library part (hide in an #Include) =================
-SetWorkingDir(A_ScriptDir)
 DllCall("LoadLibrary", "Str", A_ScriptDir "\Vd.dll", "Ptr")
 
 VdErr() => StrGet(DllCall("Vd\VdLastErrorText", "Ptr"), "UTF-8")

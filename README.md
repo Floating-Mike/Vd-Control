@@ -1,13 +1,16 @@
 # Vd.dll — numbered virtual desktops for Windows 11 25H2+
 
-From-scratch C++ DLL (no fork, no runtime dependency) that exposes the
-undocumented virtual-desktop COM API as plain 1-based numbered functions for
-AutoHotkey v2. Targets **Windows 11 24H2 (26100+) / 25H2 (26200+)** only.
+Lightweight C++ DLL that exposes Windows' undocumented virtual-desktop COM API as plain, easy to use functions. The primary intended use is AutoHotkey automation, but it could be utilised in many other scenarios.
 
-- Numbers are **1-based end to end**: `1..Count`, matching the number keys.
-- **Ensure-one rule:** `n > Count` creates exactly **one** new desktop and
-  operates on it. With 4 desktops, asking for `7` uses/returns `5`.
-- Output is a **single `Vd.dll`** — no companion DLLs, no .NET.
+- Targets **Windows 11 24H2 (26100+) / 25H2 (26200+)** only.
+- Active desktops are numbered (1-based, to match keyboard keys).
+- Asking to jump to a non-existent desktop index creates a (single) new desktop and moves to that; it **doesn't create interstitial desktops up to the number requsted**.
+- Animations can be switched on or off.
+- Desktop creation is (articiially) restricted to a **maximum of 32**. If more have been created through other means, they can still be managed through this tool.
+- Output is a **single `Vd.dll`** — no external libraries are necessary, so it should work on any up-to-date installation of Windows 11.
+- Can be placed next to `.ahk` scripts and accessed using the `DllCall` funtionality. See `example.ahk` for a ready-to-use segment that sets up the library and could be placed in a `#include'.
+
+-- **Below this point this readme is machine generated** --
 
 ## API
 
