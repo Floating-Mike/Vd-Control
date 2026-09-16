@@ -158,3 +158,14 @@ for 64-bit AHK.
 - Cannot-move cases (return `-1`): no foreground window, shell/toolwindows
   with no application view, pinned windows/apps, elevated windows from a
   non-elevated caller.
+
+## Acknowledgments
+
+All code here is written from scratch (no forked code), but the undocumented
+interface shapes it wraps were identified through community
+reverse-engineering, not discovered here — thanks to:
+
+- [MScholtes/VirtualDesktop](https://github.com/MScholtes/VirtualDesktop) — the 24H2 interface definitions (`VirtualDesktop11-24H2.cs`): the `IVirtualDesktopManagerInternal` IID, the vtable order including the inserted `SwitchDesktopAndMoveForegroundView` slot, and the `IApplicationViewCollection` / `IVirtualDesktop` layouts mirrored in `src/vd_com.h`.
+- [RadAd/DesktopsMenu](https://github.com/RadAd/DesktopsMenu) — `Win10Desktops.h`, which corroborated the same 24H2 vtable in C++ form.
+- [Ciantic/VirtualDesktopAccessor](https://github.com/Ciantic/VirtualDesktopAccessor) — the numbered `GoToDesktopNumber` / `MoveWindowToDesktopNumber` API shape this DLL's exports follow, plus confirmation of the 24H2 vtable break and 25H2-tested interface IDs.
+- [WinJump](https://github.com/widavies/WinJump) — the vtable-dump methodology behind the "re-dump `twinui.pcshell.dll` after a Windows update" procedure above.
