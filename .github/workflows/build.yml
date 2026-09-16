@@ -24,7 +24,7 @@ jobs:
           arch: ${{ matrix.arch }}
 
       - name: Run build script
-        run: build-msvc.bat
+        run: .\build-msvc.bat
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
