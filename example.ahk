@@ -6,6 +6,10 @@
 ; Convention: desktops are 1-based (1..Count), matching the number keys.
 ; Out-of-range rule: asking for n > Count creates EXACTLY ONE new desktop
 ; and uses it. E.g. 4 exist + ask 7 -> new desktop 5 is used and returned.
+; Safety cap: creation is refused once 32 desktops exist (max total exactly
+; 32) — the call returns -1 with VdLastErrorText() set for debugging. n
+; itself is never clamped and already-existing desktops beyond 32 remain
+; usable; only creating desktop 33+ fails. Applies to goto and move paths.
 ;
 ; Hotkey choice: this demo uses Win+digit throughout. Note EVERY such
 ; combination is a Windows 11 default (details above each section) — fine

@@ -3,6 +3,9 @@
 // 1-based numbering end to end: desktop numbers are 1..Count.
 // Out-of-range rule: requesting n > Count creates EXACTLY ONE new desktop
 // and operates on it (e.g. 4 exist + ask 7 -> new desktop 5 is used).
+// Safety cap: creation is refused once 32 desktops exist (max total is
+// exactly 32). Using an already-existing high number still works; only a
+// call that would create desktop 33+ fails with -1 (see VdEnsure).
 //
 // Exports (all __stdcall so AHK DllCall needs no "Cdecl" suffix):
 //   int VdGetCount()                 -> count, or -1 on error
@@ -18,7 +21,8 @@
 //   int VdMoveHwnd(HWND hwnd, int n) -> actual 1-based target, or -1
 //   int VdMoveFocusedAndGo(int n)    -> actual 1-based target; window moved AND
 //                                      focus switched in one call (single
-//                                      desktop created if n out of range)
+//                                      desktop created if n out of range,
+//                                      up to 32 total)
 //   int VdGetHwndDesktop(HWND hwnd)  -> 1-based desktop of window, or -1
 //   int VdSetAnimation(BOOL on)      -> previous flag (0/1). Process-global,
 //                                      remembered for DLL lifetime (default
@@ -205,8 +209,19 @@ static int VdIndexOfGuid(VD_IManagerInternal* mgr, const GUID& id) {
     return found;
 }
 
+// Safety cap on total desktops. The underlying COM API is undocumented with
+// no MS-published safeguards, so refuse to be a vector for unbounded
+// resource-hungry creation. Creation-only: n itself is never clamped and
+// already-existing desktops (even beyond the cap, created externally) remain
+// fully usable. Only a call that would create a desktop taking the total
+// above the cap fails. File an issue if you have a valid use-case for more.
+static constexpr UINT kVdMaxDesktops = 32;
+
 // Ensure rule: nOneBased >= 1 required. n <= count -> existing desktop.
-// n > count -> CreateDesktop() ONCE; actual becomes oldCount+1.
+// n > count -> CreateDesktop() ONCE; actual becomes oldCount+1, unless
+// count is already at kVdMaxDesktops, in which case fail with -1 and set
+// VdLastErrorText ("count limit reached") for debugger inspection only
+// (the DLL itself never reports to the user).
 static bool VdEnsure(VD_IManagerInternal* mgr, int nOneBased,
                      VD_IVirtualDesktop** out, int* actualOneBased) {
     *out = nullptr;
@@ -220,6 +235,10 @@ static bool VdEnsure(VD_IManagerInternal* mgr, int nOneBased,
         if (!VdGetDesktopAt(mgr, (UINT)(nOneBased - 1), out)) return false;
         *actualOneBased = nOneBased;
         return true;
+    }
+    if (count >= kVdMaxDesktops) {
+        VdSetErrorMsg(E_FAIL, "CreateDesktop blocked - count limit (32) reached");
+        return false;
     }
     HRESULT hr = mgr->CreateDesktop(out);
     if (FAILED(hr) || !*out) {
