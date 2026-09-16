@@ -1,0 +1,33 @@
+name: Release (MSVC)
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, x64, arm64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Run build script
+        run: build-msvc.bat
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vd-${{ matrix.arch }}.dll
+          path: build/Vd.dll
