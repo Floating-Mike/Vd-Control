@@ -1,14 +1,14 @@
-# Vd.dll — numbered virtual desktops for Windows 11 25H2+
+# Vd.dll — Simplified Windows Virtual Desktop control for Windows 11, designed for AutoHotkey
 
 Lightweight C++ DLL that exposes Windows' undocumented virtual-desktop COM API as plain, easy to use functions. The primary intended use is AutoHotkey automation, but it could be utilised in many other scenarios.
 
 - Targets **Windows 11 24H2 (26100+) / 25H2 (26200+)** only.
 - Active desktops are numbered (1-based, to match keyboard keys).
-- Asking to jump to a non-existent desktop index creates a (single) new desktop and moves to that; it **doesn't create interstitial desktops up to the number requsted**.
+- Asking to jump to a non-existent desktop index creates a (single) new desktop and moves to that; it **doesn't create interstitial desktops up to the number reqeusted**.
 - Animations can be switched on or off.
-- Desktop creation is (articiially) restricted to a **maximum of 32**. If more have been created through other means, they can still be managed through this tool.
+- Desktop creation is (artificially) restricted to a **maximum of 32**. If more have been created through other means, they can still be managed through this tool.
 - Output is a **single `Vd.dll`** — no external libraries are necessary, so it should work on any up-to-date installation of Windows 11.
-- Can be placed next to `.ahk` scripts and accessed using the `DllCall` funtionality. See `example.ahk` for a ready-to-use segment that sets up the library and could be placed in a `#include'.
+- Can be placed next to `.ahk` scripts and accessed using the `DllCall` functionality. See `example.ahk` for a ready-to-use segment that sets up the library and could be placed in a `#include'.
 
 -- **Below this point this readme is machine generated** --
 
