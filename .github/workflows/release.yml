@@ -26,19 +26,31 @@ jobs:
       - name: Run build script
         run: .\build-msvc.bat
 
+      - name: Stage arch-named zip (contains Vd.dll)
+        run: Compress-Archive -Path build\Vd.dll -DestinationPath build\Vd-${{ matrix.arch }}.zip -Force
+
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Vd-${{ matrix.arch }}.dll
-          path: build/Vd.dll
+          name: Vd-${{ matrix.arch }}.zip
+          path: build/Vd-${{ matrix.arch }}.zip
 
   publish:
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
 
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List staged assets
+        run: ls -l dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
@@ -47,5 +59,5 @@ jobs:
           name: Release ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            Vd-x86.dll
-            Vd-x64.dll
+            dist/Vd-x86.zip
+            dist/Vd-x64.zip
