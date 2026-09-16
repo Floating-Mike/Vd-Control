@@ -16,6 +16,9 @@
 //                                       the fallback = last-active desktop)
 //   int VdMoveFocused(int n)         -> actual 1-based target, window stays or -1
 //   int VdMoveHwnd(HWND hwnd, int n) -> actual 1-based target, or -1
+//   int VdMoveFocusedAndGo(int n)    -> actual 1-based target; window moved AND
+//                                      focus switched in one call (single
+//                                      desktop created if n out of range)
 //   int VdGetHwndDesktop(HWND hwnd)  -> 1-based desktop of window, or -1
 //   int VdSetAnimation(BOOL on)      -> previous flag (0/1). Process-global,
 //                                      remembered for DLL lifetime (default
@@ -227,34 +230,54 @@ static bool VdEnsure(VD_IManagerInternal* mgr, int nOneBased,
     return true;
 }
 
-static bool VdMoveHwndInner(VdSession& s, HWND hwnd, int nOneBased,
-                            int* actualOneBased) {
+static bool VdGetForeground(HWND* out) {
+    HWND fg = GetForegroundWindow();
+    if (!fg) {
+        VdSetErrorMsg(E_FAIL, "no focused window");
+        return false;
+    }
+    *out = fg;
+    return true;
+}
+
+// Resolve the movable application view for hwnd. *viewOut holds a COM
+// reference on success (caller releases). Shared by all move paths.
+static bool VdResolveMovableView(VdSession& s, HWND hwnd,
+                                 VD_ApplicationView** viewOut) {
+    *viewOut = nullptr;
     if (!IsWindow(hwnd)) {
         VdSetErrorMsg(E_INVALIDARG, "not a valid window");
         return false;
     }
-    VD_ApplicationView* view = nullptr;
-    HRESULT hr = s.views->GetViewForHwnd(hwnd, &view);
-    if (FAILED(hr) || !view) {
+    HRESULT hr = s.views->GetViewForHwnd(hwnd, viewOut);
+    if (FAILED(hr) || !*viewOut) {
         VdSetError((int)hr, "window has no application view "
                             "(toolwindow/shell/elevated?)", hr);
         return false;
     }
     BOOL canMove = FALSE;
-    hr = s.mgr->CanViewMoveDesktops(view, &canMove);
+    hr = s.mgr->CanViewMoveDesktops(*viewOut, &canMove);
     if (SUCCEEDED(hr) && !canMove) {
-        view->Release();
+        (*viewOut)->Release();
+        *viewOut = nullptr;
         VdSetErrorMsg(E_ACCESSDENIED,
                       "window cannot move desktops (pinned/toolwindow?)");
         return false;
     }
+    return true;
+}
+
+static bool VdMoveHwndInner(VdSession& s, HWND hwnd, int nOneBased,
+                            int* actualOneBased) {
+    VD_ApplicationView* view = nullptr;
+    if (!VdResolveMovableView(s, hwnd, &view)) return false;
     VD_IVirtualDesktop* target = nullptr;
     int actual = 0;
     if (!VdEnsure(s.mgr, nOneBased, &target, &actual)) {
         view->Release();
         return false;
     }
-    hr = s.mgr->MoveViewToDesktop(view, target);
+    HRESULT hr = s.mgr->MoveViewToDesktop(view, target);
     view->Release();
     int resultIndex = actual;
     target->Release();
@@ -382,11 +405,8 @@ __declspec(dllexport) int WINAPI VdGoTo(int n) {
 
 __declspec(dllexport) int WINAPI VdMoveFocused(int n) {
     VdClearError();
-    HWND fg = GetForegroundWindow();
-    if (!fg) {
-        VdSetErrorMsg(E_FAIL, "no focused window");
-        return -1;
-    }
+    HWND fg = nullptr;
+    if (!VdGetForeground(&fg)) return -1;
     VdSession s;
     if (!s.InitCom()) return -1;
     if (!s.Acquire()) return -1;
@@ -402,6 +422,39 @@ __declspec(dllexport) int WINAPI VdMoveHwnd(HWND hwnd, int n) {
     if (!s.Acquire()) return -1;
     int actual = 0;
     if (!VdMoveHwndInner(s, hwnd, n, &actual)) return -1;
+    return actual;
+}
+
+// Atomic move+follow: one VdEnsure, then move, then switch. The window and
+// focus always land on the same desktop; at most one desktop is created.
+__declspec(dllexport) int WINAPI VdMoveFocusedAndGo(int n) {
+    VdClearError();
+    HWND fg = nullptr;
+    if (!VdGetForeground(&fg)) return -1;
+    VdSession s;
+    if (!s.InitCom()) return -1;
+    if (!s.Acquire()) return -1;
+    VD_ApplicationView* view = nullptr;
+    if (!VdResolveMovableView(s, fg, &view)) return -1;
+    VD_IVirtualDesktop* target = nullptr;
+    int actual = 0;
+    if (!VdEnsure(s.mgr, n, &target, &actual)) {
+        view->Release();
+        return -1;
+    }
+    HRESULT hr = s.mgr->MoveViewToDesktop(view, target);
+    view->Release();
+    if (FAILED(hr)) {
+        target->Release();
+        VdSetError((int)hr, "MoveViewToDesktop failed", hr);
+        return -1;
+    }
+    hr = VdSwitchTo(s.mgr, target);
+    target->Release();
+    if (FAILED(hr)) {
+        VdSetError((int)hr, "SwitchDesktop failed", hr);
+        return -1;
+    }
     return actual;
 }
 
@@ -447,24 +500,26 @@ __declspec(dllexport) int WINAPI VdGoBack() {
     VdSession s;
     if (!s.InitCom()) return -1;
     if (!s.Acquire()) return -1;
+    // Preferred: last-active desktop, if it still exists.
+    int idx = -1;
     VD_IVirtualDesktop* last = nullptr;
     HRESULT hr = s.mgr->GetLastActiveDesktop(&last);
-    if (FAILED(hr) || !last) {
-        VdSetError((int)hr, "GetLastActiveDesktop failed", hr);
-        return -1;
+    if (SUCCEEDED(hr) && last) {
+        GUID id = {0};
+        if (SUCCEEDED(last->GetID(&id)))
+            idx = VdIndexOfGuid(s.mgr, id); // -1 if deleted since
+        last->Release();
     }
-    GUID id = {0};
-    hr = last->GetID(&id);
-    last->Release();
-    if (FAILED(hr)) {
-        VdSetError((int)hr, "GetID failed", hr);
-        return -1;
+    if (idx < 0) {
+        // Fallback: desktop 1 always exists. Resolved positionally, so a
+        // replacement "1" works fine. Drop the stale lookup error: the
+        // fallback below reports its own failures.
+        VdClearError();
+        idx = 1;
     }
-    int idx = VdIndexOfGuid(s.mgr, id);
-    if (idx < 0) return -1;
     VD_IVirtualDesktop* target = nullptr;
     if (!VdGetDesktopAt(s.mgr, (UINT)(idx - 1), &target)) return -1;
-    hr = s.mgr->SwitchDesktop(target);
+    hr = VdSwitchTo(s.mgr, target);
     target->Release();
     if (FAILED(hr)) {
         VdSetError((int)hr, "SwitchDesktop failed", hr);
@@ -512,15 +567,20 @@ __declspec(dllexport) int WINAPI VdRemoveCurrentDesktop() {
         VdClearError();
         return curIdx; // == 1
     }
-    // Fallback for the removed desktop's windows: last-active desktop,
-    // unless that IS the one being removed (then desktop 1, or 2 if
-    // current is 1).
+    // Fallback for the removed desktop's windows: last-active desktop, but
+    // only if it still exists and isn't the one being removed (a deleted
+    // last-active desktop leaves a stale pointer that RemoveDesktop would
+    // reject). Otherwise desktop 1 — or 2 if current is 1 — resolved
+    // positionally, so a replacement "1" works fine.
     VD_IVirtualDesktop* fallback = nullptr;
     VD_IVirtualDesktop* last = nullptr;
     hr = s.mgr->GetLastActiveDesktop(&last);
     if (SUCCEEDED(hr) && last) {
         GUID lastId = {0};
-        if (SUCCEEDED(last->GetID(&lastId)) && !IsEqualGUID(lastId, curId)) {
+        bool live = SUCCEEDED(last->GetID(&lastId)) &&
+                    !IsEqualGUID(lastId, curId) &&
+                    VdIndexOfGuid(s.mgr, lastId) > 0;
+        if (live) {
             fallback = last;
         }
         else {
@@ -540,6 +600,9 @@ __declspec(dllexport) int WINAPI VdRemoveCurrentDesktop() {
         VdSetError((int)hr, "RemoveDesktop failed", hr);
         return -1;
     }
+    // Succeeded — drop any stale note from the fallback validation above;
+    // the landing lookup below reports its own failures.
+    VdClearError();
     // Indices shift after removal — report where we actually landed.
     VD_IVirtualDesktop* now = nullptr;
     hr = s.mgr->GetCurrentDesktop(&now);

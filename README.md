@@ -20,6 +20,7 @@ AutoHotkey v2. Targets **Windows 11 24H2 (26100+) / 25H2 (26200+)** only.
 | `VdGoLeft()` / `VdGoRight()` | switch to neighbouring desktop (`-1` at the edge) | desktop switched to, `-1` |
 | `VdRemoveCurrentDesktop()` | remove current desktop (see note below) | desktop landed on, `-1` |
 | `VdMoveFocused(n)` | move focused window to `n` (creates one if beyond; stays put) | actual target, `-1` |
+| `VdMoveFocusedAndGo(n)` | move focused window to `n` **and** switch there — one atomic call, at most one desktop created | actual target, `-1` |
 | `VdMoveHwnd(hwnd, n)` | move explicit window handle to `n` | actual target, `-1` |
 | `VdGetHwndDesktop(hwnd)` | desktop containing `hwnd` (pinned windows report current) | number, `-1` |
 | `VdSetAnimation(on)` | `1`/`0`: animate all later switches; returns previous flag | previous `0`/`1` |
@@ -28,7 +29,14 @@ AutoHotkey v2. Targets **Windows 11 24H2 (26100+) / 25H2 (26200+)** only.
 All functions return `-1` on failure; call `VdLastErrorText()` for the reason
 (stale Explorer, invalid window, pinned/toolwindow, COM mismatch after a
 Windows update, …). `Move` never follows — chain `VdMoveFocused(n)` +
-`VdGoTo(n)` if you want move-and-follow (see `example.ahk`).
+`VdGoTo(n)` if you want move-and-follow (see `example.ahk`). Prefer the
+atomic `VdMoveFocusedAndGo(n)` for that: chaining a separate move and `GoTo`
+issues two ensure-calls, so an out-of-range `n` would create one desktop for
+the window and a second one for the focus jump.
+
+`VdGoBack` targets the last-active desktop, falling back to desktop 1 (always
+resolved positionally, so a replacement "1" works) when that desktop is gone.
+`VdRemoveCurrentDesktop` applies the same validation to its fallback choice.
 
 Removing a desktop never closes anything: Windows moves every window on it
 to the fallback desktop, which here is the last-active desktop (or desktop 1

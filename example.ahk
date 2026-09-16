@@ -35,6 +35,7 @@ VdMoveFocused(n)    => Check(DllCall("Vd\VdMoveFocused", "Int", n, "Int"), "Move
 VdCount()           => Check(DllCall("Vd\VdGetCount", "Int"), "GetCount")
 VdCurrent()         => Check(DllCall("Vd\VdGetCurrent", "Int"), "GetCurrent")
 VdMoveHwnd(hwnd, n) => Check(DllCall("Vd\VdMoveHwnd", "Ptr", hwnd, "Int", n, "Int"), "Move window")
+VdMoveFollow(n)     => Check(DllCall("Vd\VdMoveFocusedAndGo", "Int", n, "Int"), "Move+go " n)
 VdHwndDesk(hwnd)    => Check(DllCall("Vd\VdGetHwndDesktop", "Ptr", hwnd, "Int"), "Window desktop")
 VdSetAnimation(on)  => DllCall("Vd\VdSetAnimation", "Int", on ? 1 : 0, "Int")
 ; ================= end of library part =================
@@ -63,10 +64,12 @@ VdSetAnimation(on)  => DllCall("Vd\VdSetAnimation", "Int", on ? 1 : 0, "Int")
 #+3::VdMoveFocused(3)
 #+4::VdMoveFocused(4)
 
-; --- 3) move + follow: move then jump (most people want this on one key) ---
+; --- 3) move + follow in one atomic call ---
+; The window and focus always land on the same desktop; an out-of-range n
+; creates a single new desktop for both.
 ; Overrides Windows default: Win+Alt+1.. opens the taskbar app's Jump List.
-#!1::(VdMoveFocused(1) > 0) && VdGoTo(1)
-#!2::(VdMoveFocused(2) > 0) && VdGoTo(2)
+#!1::VdMoveFollow(1)
+#!2::VdMoveFollow(2)
 
 ; --- 4) inspect: count / current / where-is-this-window ---
 ; Win+F1 overrides Windows Help; Win+F2/F3 are unassigned by default.
