@@ -36,7 +36,6 @@
 #include <windows.h>
 #include <objbase.h>
 #include <stdio.h>
-#include <string.h>
 #include <atomic>
 
 #include "vd_com.h"
@@ -50,18 +49,16 @@
 static thread_local int   g_lastCode = 0;
 static thread_local char  g_lastText[512] = {0};
 
-static void VdSetError(int code, const char* ctx, HRESULT hr) {
+// Single error path: hr == S_OK records a plain message, otherwise the
+// message plus hex code. Callers on failure paths always pass the HRESULT.
+static void VdSetError(int code, const char* msg, HRESULT hr = S_OK) {
     g_lastCode = code;
-    if (hr == 0) hr = (HRESULT)code;
-    _snprintf_s(g_lastText, sizeof(g_lastText), _TRUNCATE,
-                "%s (code=0x%08lX)", ctx ? ctx : "error",
-                (unsigned long)(hr < 0 ? hr : code));
-}
-
-static void VdSetErrorMsg(int code, const char* msg) {
-    g_lastCode = code;
-    _snprintf_s(g_lastText, sizeof(g_lastText), _TRUNCATE, "%s",
-                msg ? msg : "error");
+    if (!msg) msg = "error";
+    if (hr == S_OK)
+        snprintf(g_lastText, sizeof(g_lastText), "%s", msg);
+    else
+        snprintf(g_lastText, sizeof(g_lastText), "%s (code=0x%08lX)", msg,
+                 (unsigned long)(hr < 0 ? hr : code));
 }
 
 static void VdClearError() {
@@ -74,7 +71,6 @@ static void VdClearError() {
 // ---------------------------------------------------------------------------
 
 struct VdSession {
-    HRESULT hrInit = E_FAIL;
     bool needUninit = false;
     VD_IServiceProvider* shell = nullptr;
     VD_IManagerInternal* mgr = nullptr;
@@ -82,16 +78,16 @@ struct VdSession {
     VD_IManager* docMgr = nullptr; // documented manager, acquired lazily
 
     bool InitCom() {
-        hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (hrInit == RPC_E_CHANGED_MODE) {
             // Caller already runs MTA (or vice versa); usable as-is.
             needUninit = false;
             return true;
         }
         if (SUCCEEDED(hrInit)) {
-            needUninit = (hrInit != S_FALSE) ? true : true; // balanced pair
-            // S_FALSE = already init on this thread; Uninitialize is still
-            // balanced (refcounted), so keep needUninit=true.
+            // Balanced pair: Uninitialize is refcounted, so it stays paired
+            // even for S_FALSE (already init on this thread).
+            needUninit = true;
             return true;
         }
         VdSetError((int)hrInit, "CoInitializeEx failed", hrInit);
@@ -205,8 +201,27 @@ static int VdIndexOfGuid(VD_IManagerInternal* mgr, const GUID& id) {
         }
     }
     arr->Release();
-    if (found < 0) VdSetErrorMsg(E_FAIL, "desktop no longer exists");
+    if (found < 0) VdSetError(E_FAIL, "desktop no longer exists");
     return found;
+}
+
+// Current desktop as a 1-based index. Single path for VdGetCurrent, the
+// pinned-window report and the post-removal landing lookup.
+static int VdCurrentIndex(VD_IManagerInternal* mgr) {
+    VD_IVirtualDesktop* cur = nullptr;
+    HRESULT hr = mgr->GetCurrentDesktop(&cur);
+    if (FAILED(hr) || !cur) {
+        VdSetError((int)hr, "GetCurrentDesktop failed", hr);
+        return -1;
+    }
+    GUID id = {0};
+    hr = cur->GetID(&id);
+    cur->Release();
+    if (FAILED(hr)) {
+        VdSetError((int)hr, "GetID failed", hr);
+        return -1;
+    }
+    return VdIndexOfGuid(mgr, id);
 }
 
 // Safety cap on total desktops. The underlying COM API is undocumented with
@@ -226,7 +241,7 @@ static bool VdEnsure(VD_IManagerInternal* mgr, int nOneBased,
                      VD_IVirtualDesktop** out, int* actualOneBased) {
     *out = nullptr;
     if (nOneBased < 1) {
-        VdSetErrorMsg(E_INVALIDARG, "desktop number starts at 1");
+        VdSetError(E_INVALIDARG, "desktop number starts at 1");
         return false;
     }
     UINT count = 0;
@@ -237,7 +252,7 @@ static bool VdEnsure(VD_IManagerInternal* mgr, int nOneBased,
         return true;
     }
     if (count >= kVdMaxDesktops) {
-        VdSetErrorMsg(E_FAIL, "CreateDesktop blocked - count limit (32) reached");
+        VdSetError(E_FAIL, "CreateDesktop blocked - count limit (32) reached");
         return false;
     }
     HRESULT hr = mgr->CreateDesktop(out);
@@ -252,7 +267,7 @@ static bool VdEnsure(VD_IManagerInternal* mgr, int nOneBased,
 static bool VdGetForeground(HWND* out) {
     HWND fg = GetForegroundWindow();
     if (!fg) {
-        VdSetErrorMsg(E_FAIL, "no focused window");
+        VdSetError(E_FAIL, "no focused window");
         return false;
     }
     *out = fg;
@@ -265,7 +280,7 @@ static bool VdResolveMovableView(VdSession& s, HWND hwnd,
                                  VD_ApplicationView** viewOut) {
     *viewOut = nullptr;
     if (!IsWindow(hwnd)) {
-        VdSetErrorMsg(E_INVALIDARG, "not a valid window");
+        VdSetError(E_INVALIDARG, "not a valid window");
         return false;
     }
     HRESULT hr = s.views->GetViewForHwnd(hwnd, viewOut);
@@ -279,15 +294,18 @@ static bool VdResolveMovableView(VdSession& s, HWND hwnd,
     if (SUCCEEDED(hr) && !canMove) {
         (*viewOut)->Release();
         *viewOut = nullptr;
-        VdSetErrorMsg(E_ACCESSDENIED,
+        VdSetError(E_ACCESSDENIED,
                       "window cannot move desktops (pinned/toolwindow?)");
         return false;
     }
     return true;
 }
 
+// Shared move core. With targetOut != nullptr the (live) target desktop is
+// returned for the caller to switch to — the move+follow path.
 static bool VdMoveHwndInner(VdSession& s, HWND hwnd, int nOneBased,
-                            int* actualOneBased) {
+                            int* actualOneBased,
+                            VD_IVirtualDesktop** targetOut = nullptr) {
     VD_ApplicationView* view = nullptr;
     if (!VdResolveMovableView(s, hwnd, &view)) return false;
     VD_IVirtualDesktop* target = nullptr;
@@ -298,13 +316,16 @@ static bool VdMoveHwndInner(VdSession& s, HWND hwnd, int nOneBased,
     }
     HRESULT hr = s.mgr->MoveViewToDesktop(view, target);
     view->Release();
-    int resultIndex = actual;
-    target->Release();
     if (FAILED(hr)) {
+        target->Release();
         VdSetError((int)hr, "MoveViewToDesktop failed", hr);
         return false;
     }
-    *actualOneBased = resultIndex;
+    *actualOneBased = actual;
+    if (targetOut)
+        *targetOut = target; // caller releases
+    else
+        target->Release();
     return true;
 }
 
@@ -343,7 +364,7 @@ static int VdGoAdjacent(int direction) {
     hr = s.mgr->GetAdjacentDesktop(cur, direction, &adj);
     cur->Release();
     if (FAILED(hr) || !adj) {
-        VdSetErrorMsg(E_FAIL, direction == 3 ? "no desktop to the left"
+        VdSetError(E_FAIL, direction == 3 ? "no desktop to the left"
                                              : "no desktop to the right");
         return -1;
     }
@@ -389,20 +410,7 @@ __declspec(dllexport) int WINAPI VdGetCurrent() {
     VdSession s;
     if (!s.InitCom()) return -1;
     if (!s.Acquire()) return -1;
-    VD_IVirtualDesktop* cur = nullptr;
-    HRESULT hr = s.mgr->GetCurrentDesktop(&cur);
-    if (FAILED(hr) || !cur) {
-        VdSetError((int)hr, "GetCurrentDesktop failed", hr);
-        return -1;
-    }
-    GUID id = {0};
-    hr = cur->GetID(&id);
-    cur->Release();
-    if (FAILED(hr)) {
-        VdSetError((int)hr, "GetID failed", hr);
-        return -1;
-    }
-    return VdIndexOfGuid(s.mgr, id);
+    return VdCurrentIndex(s.mgr);
 }
 
 __declspec(dllexport) int WINAPI VdGoTo(int n) {
@@ -453,22 +461,10 @@ __declspec(dllexport) int WINAPI VdMoveFocusedAndGo(int n) {
     VdSession s;
     if (!s.InitCom()) return -1;
     if (!s.Acquire()) return -1;
-    VD_ApplicationView* view = nullptr;
-    if (!VdResolveMovableView(s, fg, &view)) return -1;
     VD_IVirtualDesktop* target = nullptr;
     int actual = 0;
-    if (!VdEnsure(s.mgr, n, &target, &actual)) {
-        view->Release();
-        return -1;
-    }
-    HRESULT hr = s.mgr->MoveViewToDesktop(view, target);
-    view->Release();
-    if (FAILED(hr)) {
-        target->Release();
-        VdSetError((int)hr, "MoveViewToDesktop failed", hr);
-        return -1;
-    }
-    hr = VdSwitchTo(s.mgr, target);
+    if (!VdMoveHwndInner(s, fg, n, &actual, &target)) return -1;
+    HRESULT hr = VdSwitchTo(s.mgr, target);
     target->Release();
     if (FAILED(hr)) {
         VdSetError((int)hr, "SwitchDesktop failed", hr);
@@ -480,7 +476,7 @@ __declspec(dllexport) int WINAPI VdMoveFocusedAndGo(int n) {
 __declspec(dllexport) int WINAPI VdGetHwndDesktop(HWND hwnd) {
     VdClearError();
     if (!IsWindow(hwnd)) {
-        VdSetErrorMsg(E_INVALIDARG, "not a valid window");
+        VdSetError(E_INVALIDARG, "not a valid window");
         return -1;
     }
     VdSession s;
@@ -496,20 +492,7 @@ __declspec(dllexport) int WINAPI VdGetHwndDesktop(HWND hwnd) {
     if (IsEqualGUID(id, GUID_VD_AppOnAllDesktops) ||
         IsEqualGUID(id, GUID_VD_WindowOnAllDesktops)) {
         // Pinned: visible everywhere -> report current desktop.
-        VD_IVirtualDesktop* cur = nullptr;
-        hr = s.mgr->GetCurrentDesktop(&cur);
-        if (FAILED(hr) || !cur) {
-            VdSetError((int)hr, "GetCurrentDesktop failed", hr);
-            return -1;
-        }
-        GUID cid = {0};
-        hr = cur->GetID(&cid);
-        cur->Release();
-        if (FAILED(hr)) {
-            VdSetError((int)hr, "GetID failed", hr);
-            return -1;
-        }
-        return VdIndexOfGuid(s.mgr, cid);
+        return VdCurrentIndex(s.mgr);
     }
     return VdIndexOfGuid(s.mgr, id);
 }
@@ -623,20 +606,7 @@ __declspec(dllexport) int WINAPI VdRemoveCurrentDesktop() {
     // the landing lookup below reports its own failures.
     VdClearError();
     // Indices shift after removal — report where we actually landed.
-    VD_IVirtualDesktop* now = nullptr;
-    hr = s.mgr->GetCurrentDesktop(&now);
-    if (FAILED(hr) || !now) {
-        VdSetError((int)hr, "GetCurrentDesktop failed", hr);
-        return -1;
-    }
-    GUID nowId = {0};
-    hr = now->GetID(&nowId);
-    now->Release();
-    if (FAILED(hr)) {
-        VdSetError((int)hr, "GetID failed", hr);
-        return -1;
-    }
-    return VdIndexOfGuid(s.mgr, nowId);
+    return VdCurrentIndex(s.mgr);
 }
 
 __declspec(dllexport) int WINAPI VdSetAnimation(BOOL on) {
@@ -654,12 +624,3 @@ __declspec(dllexport) const char* WINAPI VdLastErrorText() {
 }
 
 } // extern "C"
-
-BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) {
-        DisableThreadLibraryCalls((HMODULE)nullptr);
-        // Balance: each export pairs CoInitializeEx/CoUninitialize per call,
-        // so nothing to do here.
-    }
-    return TRUE;
-}
